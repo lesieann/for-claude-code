@@ -296,22 +296,29 @@ async def open_context(p, cfg: Config) -> BrowserContext:
 # ---------------------------------------------------------------- 主流程
 
 
-async def login(cfg: Config) -> None:
+async def wait_enter() -> None:
+    await asyncio.to_thread(input, "（按 Enter 繼續）")
+
+
+async def login(cfg: Config, wait_user=wait_enter) -> None:
     async with async_playwright() as p:
         ctx = await open_context(p, cfg)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await page.goto(HOME_URL)
-        print("請在開啟的瀏覽器裡登入閒魚（建議用手機 App 掃碼），登入完成後回到這裡按 Enter。")
-        await asyncio.to_thread(input)
+        log("請在開啟的瀏覽器裡登入閒魚（建議用手機 App 掃碼），登入好後回來按確認。")
+        await wait_user()
         await ctx.close()
-        print("登入狀態已保存在 browser-profile 資料夾。")
+        log("登入狀態已保存，之後不用再登入。")
 
 
-async def run(cfg: Config, orders: list[Order], check_only: bool, watch: int | None) -> None:
+async def run(cfg: Config, orders: list[Order], check_only: bool, watch: int | None,
+              wait_user=wait_enter, stopped=lambda: False) -> None:
     async with async_playwright() as p:
         ctx = await open_context(p, cfg)
-        while True:
+        while not stopped():
             for order in [o for o in orders if not o.done]:
+                if stopped():
+                    break
                 try:
                     order.done = await process(cfg, ctx, order, check_only)
                 except Exception as e:
@@ -321,10 +328,14 @@ async def run(cfg: Config, orders: list[Order], check_only: bool, watch: int | N
             pending = [o for o in orders if not o.done]
             if not pending or watch is None:
                 break
-            log(f"還有 {len(pending)} 筆價格不符，{watch} 秒後重查（Ctrl+C 結束）")
-            await asyncio.sleep(watch + random.uniform(0, watch * 0.3))
-        print("全部處理完畢。瀏覽器保持開著方便你檢查，按 Enter 關閉。")
-        await asyncio.to_thread(input)
+            delay = watch + random.uniform(0, watch * 0.3)
+            log(f"還有 {len(pending)} 筆價格不符，{delay:.0f} 秒後重查")
+            for _ in range(int(delay)):
+                if stopped():
+                    break
+                await asyncio.sleep(1)
+        log("處理完畢。瀏覽器先留著讓你檢查，確認後關閉。")
+        await wait_user()
         await ctx.close()
 
 
