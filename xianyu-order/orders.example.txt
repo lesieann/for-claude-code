@@ -1,4 +1,6 @@
 # 一行一筆：網址 價格（價格放最後，用空白隔開）
 # 網址可以是電腦版商品頁，也可以直接貼閒魚 App「分享」出來的整段文字
 https://www.goofish.com/item?id=123456789012 1099
+# 要選規格的：網址 規格:黑色/256G 價格
+https://www.goofish.com/item?id=223456789012 規格:黑色/256G 2300
 【闲鱼】https://m.tb.cn/h.abcdEFG?tk=xxxx 「Switch OLED 白色」点击链接直接打开 850
