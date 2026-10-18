@@ -1,4 +1,4 @@
 config.toml
-state.json
+orders.txt
 browser-profile/
 __pycache__/
