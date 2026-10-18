@@ -14,7 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import xianyu_order as core  # noqa: E402
 
 LIST_FILE = core.BASE_DIR / "orders.txt"
-HINT = "# 每行一個商品：先貼網址（或閒魚分享的整段文字），最後空一格寫價格\n# 例：https://www.goofish.com/item?id=123456789 1099\n"
+HINT = ("# 每行一個商品：先貼網址（或閒魚分享的整段文字），最後空一格寫價格\n"
+        "# 要選規格的，中間加「規格:白色/128G」（文字要和商品頁上一模一樣）\n"
+        "# 例：https://www.goofish.com/item?id=123456789 1099\n"
+        "# 例：https://www.goofish.com/item?id=987654321 規格:黑色/256G 2300\n")
 
 
 class QueueWriter:
@@ -40,7 +43,7 @@ class App:
         self.busy = False
 
         root.title("閒魚下單工具")
-        root.geometry("760x620")
+        root.geometry("760x660")
         font = ("Microsoft JhengHei UI", 11)
 
         tk.Label(root, text="① 第一次使用先按「登入閒魚」　② 貼上商品網址和價格　③ 按「核對並下單」",
@@ -52,8 +55,15 @@ class App:
 
         opts = tk.Frame(root)
         opts.pack(fill="x", padx=12, pady=6)
+        tk.Label(opts, text="開始時間", font=font).pack(side="left")
+        self.start_time = tk.Entry(opts, width=14, font=font)
+        self.start_time.pack(side="left", padx=(4, 4))
+        tk.Label(opts, text="（例 20:00，留空＝馬上）", font=font, fg="#666").pack(side="left")
+
+        opts2 = tk.Frame(root)
+        opts2.pack(fill="x", padx=12)
         self.watch = tk.BooleanVar(value=False)
-        tk.Checkbutton(opts, text="價格還沒到時，每 60 秒自動重查，降到就下單", variable=self.watch,
+        tk.Checkbutton(opts2, text="價格還沒到時，每 60 秒自動重查，降到就下單", variable=self.watch,
                        font=font).pack(side="left")
 
         btns = tk.Frame(root)
@@ -145,8 +155,14 @@ class App:
         if not orders:
             messagebox.showinfo("閒魚下單工具", "請先貼上商品網址和價格，一行一個，價格寫在最後。")
             return
+        try:
+            start_at = core.parse_start_time(self.start_time.get())
+        except ValueError as e:
+            messagebox.showerror("時間格式不對", str(e))
+            return
+        when = f"在 {start_at:%m/%d %H:%M:%S} " if start_at else ""
         if not check_only and not messagebox.askyesno(
-            "確認下單", f"共 {len(orders)} 件商品，核對通過就會直接下單，確定嗎？"
+            "確認下單", f"共 {len(orders)} 件商品，{when}核對通過就會直接下單，確定嗎？"
         ):
             return
         LIST_FILE.write_text(text.strip() + "\n", encoding="utf-8")
@@ -154,7 +170,7 @@ class App:
         watch = 60 if self.watch.get() else None
         core.log(f"開始處理 {len(orders)} 件商品……")
         self.start(lambda: core.run(cfg, orders, check_only, watch,
-                                    wait_user=self.wait_user, stopped=self.stop.is_set))
+                                    wait_user=self.wait_user, stopped=self.stop.is_set, start_at=start_at))
 
 
 if __name__ == "__main__":

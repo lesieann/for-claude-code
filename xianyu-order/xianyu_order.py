@@ -52,6 +52,8 @@ class Config:
     browser_channel: str = "chrome"
     max_shipping: float = 0  # 允許總額比你給的價格多出多少（運費），0 = 只接受包郵
     buy_button_texts: list[str] = field(default_factory=lambda: ["立即购买"])
+    # 選完規格後，規格視窗裡的確認按鈕
+    spec_confirm_texts: list[str] = field(default_factory=lambda: ["确定", "确认", "立即购买", "下一步"])
     submit_button_texts: list[str] = field(default_factory=lambda: ["提交订单", "确认购买", "确认下单"])
     notify: dict = field(default_factory=dict)
 
@@ -66,19 +68,46 @@ class Config:
 class Order:
     url: str
     price: float
+    specs: list[str] = field(default_factory=list)  # 要選的規格，例如 ["白色", "128G"]
     done: bool = False
 
 
+SPEC_RE = re.compile(r"[規规]格\s*[:：=]\s*(\S+)")
+
+
 def parse_order_line(line: str) -> Order | None:
-    """一行一筆：網址（或閒魚 App 分享出來的整段文字）＋ 價格，價格寫在最後。"""
+    """一行一筆：網址（或閒魚 App 分享出來的整段文字）＋ 價格，價格寫在最後。
+    需要選規格時，在行內加上「規格:白色/128G」。"""
     line = line.strip()
     if not line or line.startswith("#"):
         return None
+    specs: list[str] = []
+    if m := SPEC_RE.search(line):
+        specs = [s for s in re.split(r"[/,，、]", m.group(1)) if s]
+        line = (line[: m.start()] + " " + line[m.end():]).strip()
     url = re.search(r"https?://[^\s，,]+", line)
     price = re.search(r"(\d+(?:\.\d+)?)\s*$", line)
     if not url or not price:
         raise ValueError(f"看不懂這一行（需要網址和價格）：{line}")
-    return Order(url.group(0), float(price.group(1)))
+    return Order(url.group(0), float(price.group(1)), specs)
+
+
+def parse_start_time(text: str, now: dt.datetime | None = None) -> dt.datetime | None:
+    """「20:00」「20:00:30」「10/20 20:00」「2026-10-20 20:00」。只寫時間且已過，就當作明天。"""
+    text = text.strip().replace("：", ":")
+    if not text:
+        return None
+    now = now or dt.datetime.now()
+    m = re.fullmatch(r"(?:(?:(\d{4})[-/])?(\d{1,2})[-/](\d{1,2})\s+)?(\d{1,2}):(\d{2})(?::(\d{2}))?", text)
+    if not m:
+        raise ValueError(f"看不懂時間「{text}」，請寫成 20:00 或 10/20 20:00")
+    year, month, day, hh, mm, ss = m.groups()
+    t = now.replace(hour=int(hh), minute=int(mm), second=int(ss or 0), microsecond=0)
+    if month:
+        t = t.replace(year=int(year or now.year), month=int(month), day=int(day))
+    elif t <= now:
+        t += dt.timedelta(days=1)
+    return t
 
 
 # ---------------------------------------------------------------- 解析頁面
@@ -167,16 +196,50 @@ async def wait_until_unblocked(cfg: Config, page: Page) -> None:
     log("已解除，繼續")
 
 
-async def click_first(page: Page, texts: list[str], timeout: int = 8000) -> bool:
-    for t in texts:
-        loc = page.get_by_text(t, exact=True).first
-        try:
-            await loc.wait_for(state="visible", timeout=timeout)
-            await loc.click()
+async def body_text(page: Page) -> str:
+    try:
+        return await page.inner_text("body", timeout=2000)
+    except Exception:
+        return ""
+
+
+async def poll(check, timeout: float, interval: float = 0.15) -> bool:
+    """每隔一小段時間檢查一次，條件成立就馬上回傳，不做固定等待。"""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    while loop.time() < end:
+        if await check():
             return True
-        except Exception:
-            continue
+        await asyncio.sleep(interval)
     return False
+
+
+async def click_visible(page: Page, texts: list[str], timeout: int, last: bool = False, exact: bool = True) -> bool:
+    """點畫面上看得到、文字相符的元素。last=True 點最後一個（彈出視窗通常在頁面最後）。"""
+    if exact:
+        loc = page.get_by_text(re.compile(r"^\s*(" + "|".join(map(re.escape, texts)) + r")\s*$"))
+    else:
+        loc = page.get_by_text(texts[0])
+    loc = loc.locator("visible=true")
+    target = loc.last if last else loc.first
+    try:
+        await target.wait_for(state="visible", timeout=timeout)
+        await target.click()
+        return True
+    except Exception:
+        return False
+
+
+async def select_specs(page: Page, specs: list[str], timeout: int) -> list[str]:
+    """依序點選規格，回傳沒找到的規格。第一個規格等 timeout，之後的視窗已經出現，只等一下。"""
+    missing = []
+    for i, s in enumerate(specs):
+        wait = timeout if i == 0 else min(timeout, 1500)
+        if await click_visible(page, [s], wait, last=True) or await click_visible(page, [s], 200, last=True, exact=False):
+            await page.wait_for_timeout(150)
+        else:
+            missing.append(s)
+    return missing
 
 
 async def read_item(cfg: Config, page: Page, url: str) -> dict:
@@ -193,6 +256,13 @@ async def read_item(cfg: Config, page: Page, url: str) -> dict:
         if info["price"] is not None:
             api.update(info)
 
+    async def loaded() -> bool:
+        if api.get("price") is not None:
+            return True
+        text = await body_text(page)
+        markers = cfg.buy_button_texts + GONE_MARKERS + BLOCK_MARKERS
+        return any(m in text for m in markers)
+
     page.on("response", on_response)
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=45000)
@@ -201,15 +271,12 @@ async def read_item(cfg: Config, page: Page, url: str) -> dict:
             # 分享短網址會轉到手機版頁面，改開電腦版商品頁
             api.clear()
             await page.goto(ITEM_URL.format(id=m.group(1)), wait_until="domcontentloaded", timeout=45000)
-        try:
-            await page.wait_for_load_state("networkidle", timeout=15000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(1000)
+        await poll(loaded, 12)
+        await page.wait_for_timeout(300)
         if await is_blocked(page):
             await wait_until_unblocked(cfg, page)
             return await read_item(cfg, page, url)
-        text = await page.inner_text("body")
+        text = await body_text(page)
     finally:
         page.remove_listener("response", on_response)
 
@@ -224,30 +291,49 @@ async def read_item(cfg: Config, page: Page, url: str) -> dict:
 
 
 async def place_order(cfg: Config, ctx: BrowserContext, page: Page, order: Order) -> str:
-    """在已打開的商品頁按購買，核對確認頁總額後提交訂單。回傳結果說明。"""
+    """在已打開的商品頁按購買（需要時選規格），核對確認頁總額後提交訂單。回傳結果說明。"""
     pages_before = set(ctx.pages)
-    if not await click_first(page, cfg.buy_button_texts):
-        return "找不到「立即购买」按鈕（可能需要選規格，或賣家沒開放直接購買）"
-    await page.wait_for_timeout(2500)
+    url_before = page.url
+
+    async def navigated() -> bool:
+        return page.url != url_before or any(p not in pages_before for p in ctx.pages)
+
+    # 規格可能直接列在商品頁上（先點），也可能按「立即购买」後才跳出視窗（之後再點）
+    missing = await select_specs(page, order.specs, 300) if order.specs else []
+    if not await click_visible(page, cfg.buy_button_texts, 8000):
+        return "找不到「立即购买」按鈕（可能賣家沒開放直接購買）"
+
+    if order.specs and not await poll(navigated, 1.5):
+        if missing:
+            missing = await select_specs(page, missing, 5000)
+        if missing:
+            return f"找不到規格「{'、'.join(missing)}」，請確認文字和商品頁上的一模一樣"
+        await click_visible(page, cfg.spec_confirm_texts, 3000, last=True)
+
+    if not await poll(navigated, 10):
+        hint = "" if order.specs else "（如果商品要選規格，請在清單加上「規格:xxx」）"
+        return f"按了購買但沒有進到訂單確認頁，沒有提交{hint}"
     new_pages = [p for p in ctx.pages if p not in pages_before]
     confirm = new_pages[-1] if new_pages else page
     await confirm.bring_to_front()
-    try:
-        await confirm.wait_for_load_state("networkidle", timeout=15000)
-    except Exception:
-        pass
+
+    async def total_ready() -> bool:
+        return total_from_text(await body_text(confirm)) is not None or await is_blocked(confirm)
+
+    await poll(total_ready, 12)
     if await is_blocked(confirm):
         await wait_until_unblocked(cfg, confirm)
+        await poll(total_ready, 12)
 
-    total = total_from_text(await confirm.inner_text("body"))
+    total = total_from_text(await body_text(confirm))
     limit = order.price + cfg.max_shipping
     if total is None:
-        return "確認頁讀不到應付總額，為了安全沒有提交，請在瀏覽器手動確認"
+        return "訂單確認頁讀不到應付總額，為了安全沒有提交，請在瀏覽器手動確認"
     if total > limit + 0.001:
         return f"確認頁總額 ¥{total:g} 超過上限 ¥{limit:g}（含運費），沒有提交"
-    if not await click_first(confirm, cfg.submit_button_texts, timeout=10000):
+    if not await click_visible(confirm, cfg.submit_button_texts, 10000):
         return "找不到「提交订单」按鈕，請在瀏覽器手動完成"
-    await confirm.wait_for_timeout(3000)
+    await confirm.wait_for_timeout(2000)
     return f"OK ¥{total:g}"
 
 
@@ -311,10 +397,32 @@ async def login(cfg: Config, wait_user=wait_enter) -> None:
         log("登入狀態已保存，之後不用再登入。")
 
 
+async def wait_until(start_at: dt.datetime, ctx: BrowserContext, stopped) -> None:
+    """等到指定時間。開始前 1 分鐘先打開閒魚首頁，確認登入狀態、暖機。"""
+    log(f"排定在 {start_at:%m/%d %H:%M:%S} 開始，瀏覽器先開著等待")
+    warmed = False
+    while not stopped():
+        left = (start_at - dt.datetime.now()).total_seconds()
+        if left <= 0:
+            break
+        if not warmed and left <= 60:
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await page.goto(HOME_URL, wait_until="domcontentloaded")
+            warmed = True
+        if int(left) % 300 == 0 or 0 < left <= 10:
+            log(f"還有 {int(left // 60)} 分 {int(left % 60)} 秒開始")
+        await asyncio.sleep(min(1, left))
+    else:
+        return
+    log("時間到，開始！")
+
+
 async def run(cfg: Config, orders: list[Order], check_only: bool, watch: int | None,
-              wait_user=wait_enter, stopped=lambda: False) -> None:
+              wait_user=wait_enter, stopped=lambda: False, start_at: dt.datetime | None = None) -> None:
     async with async_playwright() as p:
         ctx = await open_context(p, cfg)
+        if start_at:
+            await wait_until(start_at, ctx, stopped)
         while not stopped():
             for order in [o for o in orders if not o.done]:
                 if stopped():
@@ -347,6 +455,8 @@ def main() -> None:
     ap.add_argument("-c", "--config", default=str(BASE_DIR / "config.toml"))
     ap.add_argument("--check", action="store_true", help="只核對網址與價格，不下單")
     ap.add_argument("--watch", type=int, metavar="秒", help="價格不符的商品每隔幾秒重查，直到符合就下單")
+    ap.add_argument("--at", metavar="時間", help="到指定時間才開始，例如 20:00 或 10/20 20:00")
+    ap.add_argument("--spec", help="要選的規格，用 / 分隔，例如 白色/128G（只套用在指令列給的那一件）")
     ap.add_argument("--login", action="store_true", help="開瀏覽器登入閒魚")
     args = ap.parse_args()
 
@@ -363,15 +473,20 @@ def main() -> None:
     if args.url:
         if args.price is None:
             sys.exit("請在網址後面加上價格，例如：python xianyu_order.py https://www.goofish.com/item?id=123 1099")
-        orders.append(Order(args.url, args.price))
+        specs = [s for s in re.split(r"[/,，、]", args.spec or "") if s]
+        orders.append(Order(args.url, args.price, specs))
     if not orders:
         ap.print_help()
         sys.exit(1)
     if args.watch is not None and args.watch < 30:
         sys.exit("--watch 請不要小於 30 秒，太頻繁容易被風控")
+    try:
+        start_at = parse_start_time(args.at or "")
+    except ValueError as e:
+        sys.exit(str(e))
 
     try:
-        asyncio.run(run(cfg, orders, args.check, args.watch))
+        asyncio.run(run(cfg, orders, args.check, args.watch, start_at=start_at))
     except KeyboardInterrupt:
         log("已停止")
 
