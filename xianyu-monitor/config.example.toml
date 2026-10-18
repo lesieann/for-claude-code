@@ -1,0 +1,43 @@
+# 複製成 config.toml 再修改：  copy config.example.toml config.toml
+
+# 每輪查詢間隔（秒），實際會在兩者之間隨機。不要設太短，容易被風控。
+interval_min = 90
+interval_max = 150
+
+# 自動下單每天最多幾次，超過就改成只開商品頁
+max_orders_per_day = 3
+
+# 用電腦上的 Chrome；沒裝 Chrome 可改成 "msedge"
+browser_channel = "chrome"
+
+# ---- 手機通知（擇一或多個都填；全部留空就只在電腦上顯示）----
+[notify]
+# ntfy：手機裝 ntfy App，訂閱一個別人猜不到的主題名稱
+ntfy_topic = ""
+# Telegram：先用 @BotFather 建立機器人，取得 token 與你的 chat_id
+telegram_token = ""
+telegram_chat_id = ""
+# Bark（iPhone）：App 裡顯示的 key
+bark_key = ""
+
+# ---- 監控清單：每個 [[watch]] 是一組關鍵字 ----
+# action：
+#   notify = 只通知
+#   open   = 通知，並在電腦瀏覽器開好商品頁，等你自己按購買（預設，建議）
+#   order  = 自動按「立即购买」→「提交订单」，停在待付款，你再用手機付款
+# 關鍵字與 include / exclude 請用簡體字，閒魚商品標題多為簡體。
+
+[[watch]]
+keyword = "switch oled"
+max_price = 1200
+exclude = ["坏", "故障", "配件", "求购", "租"]
+action = "open"
+
+[[watch]]
+keyword = "索尼 a7c"
+min_price = 3000          # 太便宜的多半是假貨或配件
+max_price = 6500
+include = ["a7c"]
+exclude = ["求购", "回收", "租"]
+action = "order"
+order_max_price = 6000    # 6000 以內自動下單，6000～6500 只開頁面

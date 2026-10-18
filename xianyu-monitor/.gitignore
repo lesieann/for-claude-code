@@ -1,0 +1,4 @@
+config.toml
+state.json
+browser-profile/
+__pycache__/
