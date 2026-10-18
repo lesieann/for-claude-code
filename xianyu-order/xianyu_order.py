@@ -55,6 +55,7 @@ class Config:
     # 選完規格後，規格視窗裡的確認按鈕
     spec_confirm_texts: list[str] = field(default_factory=lambda: ["确定", "确认", "立即购买", "下一步"])
     submit_button_texts: list[str] = field(default_factory=lambda: ["提交订单", "确认购买", "确认下单"])
+    parallel: int = 5  # 同時處理幾件商品
     notify: dict = field(default_factory=dict)
 
     @classmethod
@@ -203,7 +204,7 @@ async def body_text(page: Page) -> str:
         return ""
 
 
-async def poll(check, timeout: float, interval: float = 0.15) -> bool:
+async def poll(check, timeout: float, interval: float = 0.05) -> bool:
     """每隔一小段時間檢查一次，條件成立就馬上回傳，不做固定等待。"""
     loop = asyncio.get_running_loop()
     end = loop.time() + timeout
@@ -224,26 +225,31 @@ async def click_visible(page: Page, texts: list[str], timeout: int, last: bool =
     target = loc.last if last else loc.first
     try:
         await target.wait_for(state="visible", timeout=timeout)
-        await target.click()
+        # force：不等畫面「穩定」。背景分頁不會重繪，一般點擊會卡到分頁被切到前面才動作
+        await target.click(force=True)
         return True
     except Exception:
         return False
 
 
 async def select_specs(page: Page, specs: list[str], timeout: int) -> list[str]:
-    """依序點選規格，回傳沒找到的規格。第一個規格等 timeout，之後的視窗已經出現，只等一下。"""
+    """依序點選規格，回傳沒找到的規格。timeout=0 表示只點畫面上已經出現的。"""
     missing = []
     for i, s in enumerate(specs):
-        wait = timeout if i == 0 else min(timeout, 1500)
+        if timeout == 0:  # 只點現在畫面上已經有的，不等待
+            if not await page.get_by_text(s, exact=True).locator("visible=true").count():
+                missing.append(s)
+                continue
+        wait = max(timeout, 500) if i == 0 else min(max(timeout, 500), 1500)
         if await click_visible(page, [s], wait, last=True) or await click_visible(page, [s], 200, last=True, exact=False):
-            await page.wait_for_timeout(150)
+            await page.wait_for_timeout(80)
         else:
             missing.append(s)
     return missing
 
 
-async def read_item(cfg: Config, page: Page, url: str) -> dict:
-    """打開商品頁，讀出商品 ID、標題、價格、是否還能買。"""
+async def read_item(cfg: Config, page: Page, url: str, reload: bool = False) -> dict:
+    """打開商品頁（reload=True 表示重新整理已預先打開的頁面），讀出商品 ID、標題、價格、是否還能買。"""
     api: dict = {}
 
     async def on_response(resp):
@@ -265,14 +271,16 @@ async def read_item(cfg: Config, page: Page, url: str) -> dict:
 
     page.on("response", on_response)
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        if reload:
+            await page.reload(wait_until="domcontentloaded", timeout=45000)
+        else:
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
         m = re.search(r"[?&](?:id|itemId)=(\d+)", page.url)
-        if m and not page.url.startswith(ITEM_URL.format(id="")):
+        if m and not reload and not page.url.startswith(ITEM_URL.format(id="")):
             # 分享短網址會轉到手機版頁面，改開電腦版商品頁
             api.clear()
             await page.goto(ITEM_URL.format(id=m.group(1)), wait_until="domcontentloaded", timeout=45000)
         await poll(loaded, 12)
-        await page.wait_for_timeout(300)
         if await is_blocked(page):
             await wait_until_unblocked(cfg, page)
             return await read_item(cfg, page, url)
@@ -290,31 +298,40 @@ async def read_item(cfg: Config, page: Page, url: str) -> dict:
     return {"id": m.group(1) if m else None, "title": title, "price": price, "gone": gone}
 
 
-async def place_order(cfg: Config, ctx: BrowserContext, page: Page, order: Order) -> str:
+async def place_order(cfg: Config, page: Page, order: Order) -> str:
     """在已打開的商品頁按購買（需要時選規格），核對確認頁總額後提交訂單。回傳結果說明。"""
-    pages_before = set(ctx.pages)
+    # 只追蹤這個商品頁自己開出的新分頁；同時處理多件時，別件開的分頁不能算進來
+    popups: list[Page] = []
+    page.on("popup", lambda p: popups.append(p))
     url_before = page.url
 
     async def navigated() -> bool:
-        return page.url != url_before or any(p not in pages_before for p in ctx.pages)
+        return page.url != url_before or bool(popups)
 
     # 規格可能直接列在商品頁上（先點），也可能按「立即购买」後才跳出視窗（之後再點）
-    missing = await select_specs(page, order.specs, 300) if order.specs else []
+    missing = await select_specs(page, order.specs, 0) if order.specs else []
     if not await click_visible(page, cfg.buy_button_texts, 8000):
         return "找不到「立即购买」按鈕（可能賣家沒開放直接購買）"
 
-    if order.specs and not await poll(navigated, 1.5):
-        if missing:
-            missing = await select_specs(page, missing, 5000)
+    if missing:
+        async def popup_ready() -> bool:
+            spec = page.get_by_text(missing[0], exact=True).locator("visible=true")
+            return await navigated() or await spec.count() > 0
+
+        await poll(popup_ready, 5)
+        if await navigated():
+            return f"規格「{'、'.join(missing)}」還沒選到就跳到下一頁，沒有提交"
+        missing = await select_specs(page, missing, 1000)
         if missing:
             return f"找不到規格「{'、'.join(missing)}」，請確認文字和商品頁上的一模一樣"
         await click_visible(page, cfg.spec_confirm_texts, 3000, last=True)
+    elif order.specs and not await poll(navigated, 1):
+        await click_visible(page, cfg.spec_confirm_texts, 2000, last=True)
 
     if not await poll(navigated, 10):
         hint = "" if order.specs else "（如果商品要選規格，請在清單加上「規格:xxx」）"
         return f"按了購買但沒有進到訂單確認頁，沒有提交{hint}"
-    new_pages = [p for p in ctx.pages if p not in pages_before]
-    confirm = new_pages[-1] if new_pages else page
+    confirm = popups[-1] if popups else page
     await confirm.bring_to_front()
 
     async def total_ready() -> bool:
@@ -331,16 +348,24 @@ async def place_order(cfg: Config, ctx: BrowserContext, page: Page, order: Order
         return "訂單確認頁讀不到應付總額，為了安全沒有提交，請在瀏覽器手動確認"
     if total > limit + 0.001:
         return f"確認頁總額 ¥{total:g} 超過上限 ¥{limit:g}（含運費），沒有提交"
+    confirm_url, pay_popups = confirm.url, []
+    confirm.on("popup", lambda p: pay_popups.append(p))
     if not await click_visible(confirm, cfg.submit_button_texts, 10000):
         return "找不到「提交订单」按鈕，請在瀏覽器手動完成"
-    await confirm.wait_for_timeout(2000)
+
+    async def submitted() -> bool:
+        return confirm.url != confirm_url or bool(pay_popups)
+
+    await poll(submitted, 5)  # 等送出完成，頁面跳到付款
     return f"OK ¥{total:g}"
 
 
-async def process(cfg: Config, ctx: BrowserContext, order: Order, check_only: bool) -> bool:
-    """處理一筆。回傳 True 表示已結束（下單成功或不用再試）。"""
-    page = await ctx.new_page()
-    info = await read_item(cfg, page, order.url)
+async def process(cfg: Config, ctx: BrowserContext, order: Order, check_only: bool, page: Page | None = None) -> bool:
+    """處理一筆。page 是預先打開的商品頁（定時模式）。回傳 True 表示已結束（下單成功或不用再試）。"""
+    t0 = asyncio.get_running_loop().time()
+    reload = page is not None
+    page = page or await ctx.new_page()
+    info = await read_item(cfg, page, order.url, reload=reload)
     label = f"{info['title'][:40]}（¥{info['price']:g}）" if info["price"] is not None else info["title"][:40]
 
     if not info["id"]:
@@ -362,7 +387,8 @@ async def process(cfg: Config, ctx: BrowserContext, order: Order, check_only: bo
         return True
 
     log(f"✓ 核對通過，下單：{label}")
-    result = await place_order(cfg, ctx, page, order)
+    result = await place_order(cfg, page, order)
+    log(f"（從開商品頁到送出共 {asyncio.get_running_loop().time() - t0:.1f} 秒）")
     if result.startswith("OK"):
         notify(cfg, "已下單，請用手機付款", f"{info['title'][:40]} {result[3:]}\n閒魚 App →「我的」→「我买到的」→「待付款」", ITEM_URL.format(id=info["id"]))
     else:
@@ -370,8 +396,14 @@ async def process(cfg: Config, ctx: BrowserContext, order: Order, check_only: bo
     return True
 
 
-async def open_context(p, cfg: Config) -> BrowserContext:
-    kwargs = dict(headless=False, locale="zh-CN", viewport={"width": 1300, "height": 850})
+async def open_context(p, cfg: Config, fast: bool = True) -> BrowserContext:
+    """fast=True 時不載入圖片，頁面開得比較快（登入要看 QR code，所以登入時不用）。"""
+    # 同時處理多件時，大部分分頁在背景；關掉瀏覽器對背景分頁的降速
+    args = ["--disable-background-timer-throttling", "--disable-renderer-backgrounding",
+            "--disable-backgrounding-occluded-windows"]
+    if fast:
+        args.append("--blink-settings=imagesEnabled=false")
+    kwargs = dict(headless=False, locale="zh-CN", viewport={"width": 1300, "height": 850}, args=args)
     try:
         return await p.chromium.launch_persistent_context(PROFILE_DIR, channel=cfg.browser_channel, **kwargs)
     except Exception as e:
@@ -388,7 +420,7 @@ async def wait_enter() -> None:
 
 async def login(cfg: Config, wait_user=wait_enter) -> None:
     async with async_playwright() as p:
-        ctx = await open_context(p, cfg)
+        ctx = await open_context(p, cfg, fast=False)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await page.goto(HOME_URL)
         log("請在開啟的瀏覽器裡登入閒魚（建議用手機 App 掃碼），登入好後回來按確認。")
@@ -397,21 +429,21 @@ async def login(cfg: Config, wait_user=wait_enter) -> None:
         log("登入狀態已保存，之後不用再登入。")
 
 
-async def wait_until(start_at: dt.datetime, ctx: BrowserContext, stopped) -> None:
-    """等到指定時間。開始前 1 分鐘先打開閒魚首頁，確認登入狀態、暖機。"""
+async def wait_until(start_at: dt.datetime, stopped, preload) -> None:
+    """等到指定時間。開始前 30 秒先把商品頁都打開，時間到只要重新整理。"""
     log(f"排定在 {start_at:%m/%d %H:%M:%S} 開始，瀏覽器先開著等待")
-    warmed = False
+    preloaded = False
     while not stopped():
         left = (start_at - dt.datetime.now()).total_seconds()
         if left <= 0:
             break
-        if not warmed and left <= 60:
-            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-            await page.goto(HOME_URL, wait_until="domcontentloaded")
-            warmed = True
-        if int(left) % 300 == 0 or 0 < left <= 10:
+        if not preloaded and left <= 30:
+            preloaded = True
+            await preload()
+            continue
+        if int(left) % 300 == 0 or 0 < left <= 5:
             log(f"還有 {int(left // 60)} 分 {int(left % 60)} 秒開始")
-        await asyncio.sleep(min(1, left))
+        await asyncio.sleep(min(1 - dt.datetime.now().microsecond / 1e6, left))
     else:
         return
     log("時間到，開始！")
@@ -421,18 +453,36 @@ async def run(cfg: Config, orders: list[Order], check_only: bool, watch: int | N
               wait_user=wait_enter, stopped=lambda: False, start_at: dt.datetime | None = None) -> None:
     async with async_playwright() as p:
         ctx = await open_context(p, cfg)
+        ready: dict[int, Page] = {}  # 預先打開好的商品頁
+
+        async def preload() -> None:
+            log("預先打開商品頁……")
+
+            async def one(i: int, order: Order) -> None:
+                page = await ctx.new_page()
+                info = await read_item(cfg, page, order.url)
+                ready[i] = page
+                state = "已售出或下架" if info["gone"] else (f"目前 ¥{info['price']:g}" if info["price"] is not None else "讀不到價格")
+                log(f"  就緒：{info['title'][:30]}（{state}）")
+
+            await asyncio.gather(*(one(i, o) for i, o in enumerate(orders)), return_exceptions=True)
+
         if start_at:
-            await wait_until(start_at, ctx, stopped)
-        while not stopped():
-            for order in [o for o in orders if not o.done]:
-                if stopped():
-                    break
+            await wait_until(start_at, stopped, preload)
+
+        sem = asyncio.Semaphore(max(1, cfg.parallel))
+
+        async def handle(i: int, order: Order) -> None:
+            async with sem:
                 try:
-                    order.done = await process(cfg, ctx, order, check_only)
+                    order.done = await process(cfg, ctx, order, check_only, ready.pop(i, None))
                 except Exception as e:
                     log(f"✗ 處理失敗：{order.url}（{e}）")
                     order.done = watch is None
-                await asyncio.sleep(random.uniform(2, 5))
+
+        while not stopped():
+            # 所有商品同時處理，不用一件等一件
+            await asyncio.gather(*(handle(i, o) for i, o in enumerate(orders) if not o.done))
             pending = [o for o in orders if not o.done]
             if not pending or watch is None:
                 break

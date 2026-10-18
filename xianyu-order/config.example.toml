@@ -8,6 +8,9 @@ browser_channel = "chrome"
 # 0 = 只接受包郵；例如設 15，給 1000 元時總額 1015 以內才會提交。
 max_shipping = 0
 
+# 清單裡最多幾件商品同時處理
+parallel = 5
+
 # 下單完成或失敗時推播到手機（選填，擇一即可）
 [notify]
 ntfy_topic = ""        # ntfy App 訂閱的主題名稱
