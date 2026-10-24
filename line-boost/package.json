@@ -1,0 +1,14 @@
+{
+  "name": "line-boost-tool",
+  "version": "1.0.0",
+  "description": "LINE 官方帳號訊息編輯、多層圖文選單、標籤分眾推播工具（Messaging API）",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

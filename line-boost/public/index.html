@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LINE Boost 工具</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">LINE Boost <span>工具</span></div>
+    <nav id="tabs">
+      <button data-tab="compose" class="active">訊息與推播</button>
+      <button data-tab="menu">圖文選單</button>
+      <button data-tab="users">好友與標籤</button>
+      <button data-tab="auto">範本與自動回覆</button>
+      <button data-tab="stats">成效與排程</button>
+      <button data-tab="settings">帳號設定</button>
+    </nav>
+    <label class="acc">官方帳號 <select id="account"></select></label>
+  </header>
+  <div id="notice"></div>
+  <main>
+    <section id="tab-compose" class="tab active"></section>
+    <section id="tab-menu" class="tab"></section>
+    <section id="tab-users" class="tab"></section>
+    <section id="tab-auto" class="tab"></section>
+    <section id="tab-stats" class="tab"></section>
+    <section id="tab-settings" class="tab"></section>
+  </main>
+  <div id="toast"></div>
+  <script src="builder.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
