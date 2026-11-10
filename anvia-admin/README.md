@@ -17,5 +17,32 @@
 ## 資料搬遷
 客戶/訂單等個資快照不進 GitHub。正式切換時由搬遷腳本從來源匯出、直接寫入資料庫並核對筆數，見 `data/README.md`。
 
+## 本機啟動
+
+```bash
+npm install
+cp .env.example .env.local     # 至少填 ADMIN_PASSWORD、SESSION_SECRET
+npm run seed:demo              # 產生虛構示範資料到 data/dev-db.json（可略過）
+npm run dev                    # http://localhost:3000 → 登入後台
+```
+
+- 沒填 `SUPABASE_URL` 時，資料存在本機 `data/dev-db.json`（不進 git）；填了就連 Supabase（先在 SQL Editor 執行 `db/schema.sql`）。
+- `npm test`：公式與藍新加解密測試；`npm run typecheck`、`npm run build`。
+
+## 頁面
+| 路徑 | 說明 |
+|---|---|
+| `/admin` | 總覽：本月金額／利潤／新客、7 種狀態、最新批次、待辦 |
+| `/admin/orders` | 訂單：狀態分頁、搜尋篩選、勾選改狀態／放進批次／併成出貨單 |
+| `/admin/customers` | 客戶：進行中／已抵台、累計獲利、LINE 綁定 |
+| `/admin/batches` | 抵台批次：巧巧郎／台集運運費與每 kg 分攤 |
+| `/admin/shipments` | 出貨對帳：辛苦費、二補（賣貨便／好賣+）、複製明細給客人、二補付款連結 |
+| `/admin/payments` | 藍新付款連結與狀態 |
+| `/admin/line` | LINE 推播（文字／Flex，`{{name}}` 變數） |
+| `/admin/settings` | 金鑰（只顯示末 4 碼）、台銀中間價、管理員 LINE userId |
+| `/pay/[編號]` | 客人的專屬付款頁 → 藍新 |
+| `/api/newebpay/notify` | 藍新 NotifyURL：驗章、比對金額、回寫付款／訂單／出貨單 |
+| `/member` | 客人會員頁（LIFF）：全部訂單＋我的付款，不顯示利潤 |
+
 ## 狀態
-規格與資料模型已定稿；程式本體開發中（詳見 ROADMAP.md）。
+骨架與主要功能可在本機運作（詳見 ROADMAP.md）。
