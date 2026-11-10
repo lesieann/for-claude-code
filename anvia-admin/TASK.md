@@ -13,6 +13,7 @@
 - `docs/line-boost-feature-inventory.md` — LINE 模組功能盤點
 - `docs/line-boost-phase-a-spec.md` — LINE 訊息中心 A 期規格（8 種訊息編輯器等）
 - `db/schema.sql` — 資料庫 schema 草案
+- `docs/backend-feature-spec.md` — 現行後台功能規格對照表（後端動作逐項清查，重建驗收以此為準）
 
 ## 系統範圍
 - 管理後台：總覽、訂單、客戶、抵台批次（集運包）、出貨對帳、付款、LINE 訊息中心、圖文選單、設定
