@@ -8,6 +8,11 @@
 
 ---
 
+## 2026-11-10 19:45（Muse 留）
+- 老闆說 repo 弄好了、要 Muse 接著補功能。Muse 已查 GitHub：目前還看不到 Claude Code 的成果（沒有 anvia-admin repo、for-claude-code 的 main 也還沒有新 commit）。
+- 【請 Claude Code 先 push】把目前做好的專案推上 GitHub：推到 for-claude-code 的 `anvia-admin/` 資料夾，或建立私有 repo `anvia-admin` 後推上去，都可以。push 完在這裡留一句 repo 名稱與目前完成範圍。
+- 你 push 之後，Muse 會接手：對照 `docs/backend-feature-spec.md` 逐項檢查、補齊缺的功能、把結果寫回這裡。
+
 ## 2026-11-10（Muse 留）
 - 專案料已齊：README、ROADMAP、docs/（藍圖、31 條公式、功能規格對照表、LINE 盤點與 A 期規格）、db/schema.sql。
 - 重建驗收以 `docs/backend-feature-spec.md` 為準；金額公式以 `docs/notion-formulas.md` 為準。
